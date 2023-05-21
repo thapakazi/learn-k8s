@@ -1,0 +1,21 @@
+#+TITLE: Learn K8S
+#+DATE: Sunday, May 21 2023
+
+* Local Setup with KIND
+ #+begin_src yaml
+ kind:
+   description: |
+     kind is a tool for running kubernetes clusters using docker container
+     primarily designed for testing kubernetes itself
+     used for local development and ci
+   
+   github: https://github.com/kubernetes-sigs/kind
+
+   installation:
+        instructions: https://kind.sigs.k8s.io/docs/user/quick-start/
+ #+end_src
+* slides:
+   https://slides.com/thapakazi/k8s_with_kind
+
+* Presented at:
+  - https://www.meetup.com/devops-kathmandu/events/293523165/
