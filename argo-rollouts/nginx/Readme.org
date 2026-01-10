@@ -1,0 +1,50 @@
+#+TITLE: ArgoRollouts with Nginx Ingress
+#+DATE: Saturday, Jan 10 2026
+
+following the doc: https://raw.githubusercontent.com/argoproj/argo-rollouts/master/docs/getting-started/nginx/ingress.yaml
+
+** setup cluster
+#+begin_src bash
+kind create cluster --name nginx-rollout --config=kind.yaml
+#+end_src
+
+** deploy argo-rollouts
+#+begin_src bash
+kubectl create namespace argo-rollouts
+kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+#+end_src
+
+** test rollouts
+#+begin_src bash
+kubectl apply -f rollout.yaml
+kubectl apply -f services.yaml
+kubectl apply -f ingress.yaml
+#+end_src
+
+** check the rollouts
+#+begin_src bash
+  alias kar='kubectl argo rollouts'  
+  kar list rollouts  
+  kar get rollout rollouts-demo --watch
+#+end_src
+
+** lets set new deployment
+#+begin_src bash
+kubectl argo rollouts set image rollouts-demo rollouts-demo=argoproj/rollouts-demo:yellow
+kubectl argo rollouts get rollout rollouts-demo
+#+end_src
+
+or
+#+begin_src bash
+  kar set image rollouts-demo rollouts-demo=argoproj/rollouts-demo:green
+  kar promote rollouts-demo
+  kar abort rollouts-demo
+
+  kar undo rollouts-demo 
+#+end_src
+
+** check dashboard
+#+begin_src bash
+ kubectl argo rollouts dashboard 
+ kar dashboard
+#+end_src
