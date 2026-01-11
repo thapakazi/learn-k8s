@@ -14,9 +14,9 @@ spec:
       maxSurge: '50% '
       steps:
       - setWeight: 5
-      - pause: {}
+      - pause: {duration: 10s}
       - setWeight: 20
-      - pause: {}
+      - pause: {duration: 30s}
       - setWeight: 50
       - pause: {}
       - setWeight: 75

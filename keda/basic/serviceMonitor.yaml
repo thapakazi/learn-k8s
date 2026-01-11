@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: http-app-monitor
+  labels:
+    release: kind-prometheus # Must match your Helm release name
+spec:
+  selector:
+    matchLabels:
+      app: http-app # Matches the label on your Service
+  endpoints:
+  - port: metrics   # Matches the 'name' of the port in your Service
+    path: /metrics  # The endpoint where metrics are exposed
+    interval: 15s   # How often Prometheus should scrape

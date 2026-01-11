@@ -8,6 +8,16 @@ following the doc: https://raw.githubusercontent.com/argoproj/argo-rollouts/mast
 kind create cluster --name nginx-rollout --config=kind.yaml
 #+end_src
 
+** setup nginx
+#+begin_src bash
+  # helm upgrade --install ingress-nginx ingress-nginx \
+  #  --repo https://kubernetes.github.io/ingress-nginx \
+  #  --namespace ingress-nginx --create-namespace
+
+  # this works for kind
+  kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+#+end_src
+
 ** deploy argo-rollouts
 #+begin_src bash
 kubectl create namespace argo-rollouts
