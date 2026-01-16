@@ -3,15 +3,24 @@
 
 ** Setup clusters
 #+begin_src bash
-kind create cluster --config mgmt-cluster.yaml &
-kind create cluster --config workload-east.yaml &
-kind create cluster --config workload-west.yaml
+kind create cluster --config kind/kind-mgmt-cluster.yaml &
+kind create cluster --config kind/kind-workload-east.yaml &
+kind create cluster --config kind/kind-workload-west.yaml
 #+end_src
 
 ** ensure all clusters are up
 #+begin_src bash
 kubectl config get-contexts
 #+end_src
+
+** setup networking so they can talk with each other
+#+begin_src bash
+  docker network create  argo-kind || true
+  docker network connect argo-kind mgmt-control-plane
+  docker network connect argo-kind workload-east-control-plane
+  docker network connect argo-kind workload-west-control-plane
+#+end_src
+
 
 ** deploy argocd
 set context to mgmt cluster and install argocd

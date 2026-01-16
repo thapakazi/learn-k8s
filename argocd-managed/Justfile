@@ -1,0 +1,234 @@
+# ArgoCD Multi-Cluster Setup with Kind
+
+default:
+    @just --list
+
+# ─────────────────────────────────────────────────────────────
+# Clusters
+# ─────────────────────────────────────────────────────────────
+
+# Create all three kind clusters in parallel
+[group('clusters')]
+clusters-create:
+    kind create cluster --config kind/kind-mgmt-cluster.yaml &
+    kind create cluster --config kind/kind-workload-east.yaml &
+    kind create cluster --config kind/kind-workload-west.yaml &
+    wait
+
+# Create mgmt cluster
+[group('clusters')]
+cluster-mgmt:
+    kind create cluster --config kind/kind-mgmt-cluster.yaml
+
+# Create east workload cluster
+[group('clusters')]
+cluster-east:
+    kind create cluster --config kind/kind-workload-east.yaml
+
+# Create west workload cluster
+[group('clusters')]
+cluster-west:
+    kind create cluster --config kind/kind-workload-west.yaml
+
+# Delete all kind clusters
+[group('clusters')]
+clusters-delete:
+    kind delete cluster --name mgmt || true
+    kind delete cluster --name workload-east || true
+    kind delete cluster --name workload-west || true
+
+# Show all kubectl contexts
+[group('clusters')]
+contexts:
+    kubectl config get-contexts
+
+# ─────────────────────────────────────────────────────────────
+# Networking
+# ─────────────────────────────────────────────────────────────
+
+# Setup docker network so clusters can communicate
+[group('network')]
+network-setup:
+    docker network create argo-kind || true
+    docker network connect argo-kind mgmt-control-plane
+    docker network connect argo-kind workload-east-control-plane
+    docker network connect argo-kind workload-west-control-plane
+
+# Remove docker network
+[group('network')]
+network-cleanup:
+    docker network rm argo-kind || true
+
+# ─────────────────────────────────────────────────────────────
+# ArgoCD
+# ─────────────────────────────────────────────────────────────
+
+# Install ArgoCD on mgmt cluster
+[group('argocd')]
+argocd-install:
+    kubectl config use-context kind-mgmt
+    kubectl create namespace argocd || true
+    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+
+# Get ArgoCD admin password
+[group('argocd')]
+argocd-password:
+    @kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d && echo
+
+# Port-forward ArgoCD server (runs in foreground)
+[group('argocd')]
+argocd-portfwd:
+    kubectl port-forward svc/argocd-server -n argocd 6002:443
+
+# Login to ArgoCD CLI
+[group('argocd')]
+argocd-login:
+    #!/usr/bin/env bash
+    ADMIN_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+    argocd login localhost:6002 --username admin --password "$ADMIN_PASSWORD" --insecure
+
+# ─────────────────────────────────────────────────────────────
+# Workload Cluster Setup
+# ─────────────────────────────────────────────────────────────
+
+# Setup west cluster for ArgoCD management
+[group('workloads')]
+setup-west:
+    just _setup-argocd-manager workload-west
+
+# Setup east cluster for ArgoCD management
+[group('workloads')]
+setup-east:
+    just _setup-argocd-manager workload-east
+
+# Setup both workload clusters
+[group('workloads')]
+setup-workloads: setup-east setup-west
+
+[private]
+_setup-argocd-manager cluster:
+    #!/usr/bin/env bash
+    kubectl config use-context kind-{{cluster}}
+    kubectl create sa argocd-manager -n kube-system || true
+    kubectl create clusterrolebinding argocd-manager-role \
+      --clusterrole=cluster-admin \
+      --serviceaccount=kube-system:argocd-manager || true
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: argocd-manager-long-lived-token
+      namespace: kube-system
+      annotations:
+        kubernetes.io/service-account.name: argocd-manager
+    type: kubernetes.io/service-account-token
+    EOF
+
+# ─────────────────────────────────────────────────────────────
+# ArgoCD Cluster Registration
+# ─────────────────────────────────────────────────────────────
+
+# Register west cluster with ArgoCD
+[group('argocd-clusters')]
+register-west: setup-west
+    just _register-cluster workload-west
+
+# Register east cluster with ArgoCD
+[group('argocd-clusters')]
+register-east: setup-east
+    just _register-cluster workload-east
+
+# Register both workload clusters with ArgoCD
+[group('argocd-clusters')]
+register-all: register-east register-west
+
+# Show registered ArgoCD clusters
+[group('argocd-clusters')]
+argocd-clusters:
+    kubectl --context kind-mgmt get secrets -n argocd -l argocd.argoproj.io/secret-type=cluster
+
+[private]
+_register-cluster cluster:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "Registering {{cluster}} with ArgoCD..."
+
+    # Use the docker hostname from argo-kind network
+    SERVER="https://{{cluster}}-control-plane:6443"
+
+    # Get CA cert from the workload cluster
+    kubectl config use-context kind-{{cluster}}
+    CA_DATA=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.ca\.crt}')
+
+    # Get the bearer token
+    TOKEN=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.token}' | base64 -d)
+
+    # Switch to mgmt cluster and create the cluster secret
+    kubectl config use-context kind-mgmt
+
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: cluster-{{cluster}}
+      namespace: argocd
+      labels:
+        argocd.argoproj.io/secret-type: cluster
+    type: Opaque
+    stringData:
+      name: {{cluster}}
+      server: ${SERVER}
+      config: |
+        {
+          "bearerToken": "${TOKEN}",
+          "tlsClientConfig": {
+            "insecure": false,
+            "caData": "${CA_DATA}"
+          }
+        }
+    EOF
+
+    echo "✓ {{cluster}} registered at ${SERVER}"
+
+# ─────────────────────────────────────────────────────────────
+# Apps
+# ─────────────────────────────────────────────────────────────
+
+# Deploy all apps from apps directory
+[group('apps')]
+apps-deploy:
+    kubectl --context kind-mgmt apply -R -f apps/
+
+# Deploy a specific app (e.g., just app-deploy guestbook)
+[group('apps')]
+app-deploy app:
+    kubectl --context kind-mgmt apply -R -f apps/{{app}}/
+
+# Remove all deployed apps
+[group('apps')]
+apps-delete:
+    kubectl --context kind-mgmt delete -R -f apps/ || true
+
+# Show ApplicationSets
+[group('apps')]
+apps-list:
+    kubectl --context kind-mgmt get applicationsets -n argocd
+
+# Show all ArgoCD Applications
+[group('apps')]
+apps-status:
+    kubectl --context kind-mgmt get applications -n argocd
+
+# ─────────────────────────────────────────────────────────────
+# Full Workflows
+# ─────────────────────────────────────────────────────────────
+
+# Full setup: create clusters, network, install argocd, register workloads, and deploy apps
+[group('workflows')]
+setup-all: clusters-create network-setup argocd-install register-all apps-deploy
+
+# Full cleanup: delete clusters and network
+[group('workflows')]
+cleanup: clusters-delete network-cleanup
