@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: workload-west-secret
+  namespace: argocd
+  labels:
+    # This label is the "magic" that tells ArgoCD this is a cluster
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: workload-west
+  # patch the following with fresh token 
+  server: https://workload-west-control-plane:6443
+  config: |
+    {
+      "bearerToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImFBakFyVTdydHptSTAzWENNbXJyYlNvV0R3N2JmRVFHa2lsYWZIUWNiQlUifQ.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJrdWJlLXN5c3RlbSIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VjcmV0Lm5hbWUiOiJhcmdvY2QtbWFuYWdlci10b2tlbiIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50Lm5hbWUiOiJhcmdvY2QtbWFuYWdlciIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6IjI5ZDY1N2E5LTk3YWEtNGE1ZS1iZWVlLThkMjA0Y2RiYWViYyIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDprdWJlLXN5c3RlbTphcmdvY2QtbWFuYWdlciJ9.WcHkE1XzkfcplFh9q2GQxgcWG5C2QgjQhJbQLfvAYEZSVYI8Kw0e29-JdcvIHXvKNfZ8wpIqvN-OZyLVoWA_KhYzl3lKinusOPBAPC5uabXA3SOj72XlGoMnwlh779O9VxZ5lHnVnhWCDMX4xNS9ipw1MuL_Se7Tlro3jROrwWhYjV3ibHw4GbvAmujZAqHfFRO-1nJ8cOu2GAnEU0E45CPXzn3PAQIHBWPwnL3xHvPHv3nY87hzHIPPja5aaXpS3BSBswzrCaWoOVhJAHBlAGLARVJCb7dfoMI6YOjxqOi1MyDMVjzU29zMh4f76xYGVfe3fmdyWjy8cXiHc7dXSg",
+      "tlsClientConfig": {
+        "insecure": true
+      }
+    }

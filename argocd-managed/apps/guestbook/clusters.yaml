@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: multi-cluster-guestbook
+  namespace: argocd
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchLabels:
+          argocd.argoproj.io/secret-type: cluster
+      # ADD THIS: Exclude the local management cluster if it's causing the duplicate
+      values:
+        clusterName: '{{name}}'
+  template:
+    metadata:
+      # REVISION: Added 'name' and 'server' hash or distinct suffix to prevent collisions
+      name: '{{name}}-guestbook' 
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/argoproj/argocd-example-apps.git
+        targetRevision: HEAD
+        path: guestbook
+      destination:
+        # Use the server URL directly
+        server: '{{server}}'
+        namespace: guestbook
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

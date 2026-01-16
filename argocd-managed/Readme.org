@@ -1,0 +1,71 @@
+#+TITLE: ArgoCD via mgmt cluster
+#+DATE: Thursday, Jan 15 2026
+
+** Setup clusters
+#+begin_src bash
+kind create cluster --config mgmt-cluster.yaml &
+kind create cluster --config workload-east.yaml &
+kind create cluster --config workload-west.yaml
+#+end_src
+
+** ensure all clusters are up
+#+begin_src bash
+kubectl config get-contexts
+#+end_src
+
+** deploy argocd
+set context to mgmt cluster and install argocd
+
+#+begin_src bash
+kubectl config use-context kind-mgmt
+
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+#+end_src
+
+*** get argocd password
+#+begin_src bash
+  ADMIN_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d) 
+#+end_src
+
+*** port-fwd
+#+begin_src bash
+  kubectl port-forward svc/argocd-server -n argocd 6002:443
+  argocd login localhost:6002 --username admin --password $ADMIN_PASSWORD --insecure
+#+end_src
+
+
+*** add west to list of clusters in argocd
+#+begin_src bash
+  kubectl config set-context kind-workload-west
+
+  # 1. Create the ServiceAccount
+  kubectl create sa argocd-manager -n kube-system
+
+  # 2. Create a ClusterRoleBinding for it
+  kubectl create clusterrolebining argocd-manager-role \
+    --clusterrole=cluster-admin \
+    --serviceaccount=kube-system:argocd-manager
+
+  # 3. Create a Long-Lived Token (Required for K8s 1.24+)
+  kubectl apply -f - <<EOF
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: argocd-manager-long-lived-token
+    namespace: kube-system
+    annotations:
+      kubernetes.io/service-account.name: argocd-manager
+  type: kubernetes.io/service-account-token
+  EOF
+
+  # 4. Extract the Token
+  TOKEN=$(kubectl get secret argocd-manager-token -n kube-system -o jsonpath='{.data.token}' | base64 -d)
+#+end_src
+
+#+RESULTS:
+| Context                                                          | kind-workload-west | modified. |
+| serviceaccount/argocd-manager                                    | created            |           |
+| clusterrolebinding.rbac.authorization.k8s.io/argocd-manager-role | created            |           |
+| secret/argocd-manager-long-lived-token                           | created            |           |
