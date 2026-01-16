@@ -1,5 +1,8 @@
 # ArgoCD Multi-Cluster Setup with Kind
 
+# Default workload clusters (space-separated)
+workloads := "east west north south mars"
+
 default:
     @just --list
 
@@ -7,35 +10,63 @@ default:
 # Clusters
 # ─────────────────────────────────────────────────────────────
 
-# Create all three kind clusters in parallel
-[group('clusters')]
-clusters-create:
-    kind create cluster --config kind/kind-mgmt-cluster.yaml &
-    kind create cluster --config kind/kind-workload-east.yaml &
-    kind create cluster --config kind/kind-workload-west.yaml &
-    wait
-
 # Create mgmt cluster
 [group('clusters')]
 cluster-mgmt:
     kind create cluster --config kind/kind-mgmt-cluster.yaml
 
-# Create east workload cluster
+# Create a workload cluster (e.g., just cluster east)
 [group('clusters')]
-cluster-east:
-    kind create cluster --config kind/kind-workload-east.yaml
+cluster name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    CONFIG="kind/kind-workload-{{name}}.yaml"
+    if [[ ! -f "$CONFIG" ]]; then
+        echo "Generating $CONFIG..."
+        mkdir -p kind
+        cat > "$CONFIG" <<EOF
+    kind: Cluster
+    apiVersion: kind.x-k8s.io/v1alpha4
+    name: workload-{{name}}
+    nodes:
+    - role: control-plane
+    networking:
+      apiServerAddress: "0.0.0.0"
+    EOF
+    fi
+    kind create cluster --config "$CONFIG"
 
-# Create west workload cluster
+# Create all workload clusters
 [group('clusters')]
-cluster-west:
-    kind create cluster --config kind/kind-workload-west.yaml
+clusters-workloads:
+    #!/usr/bin/env bash
+    for c in {{workloads}}; do
+        just cluster $c &
+    done
+    wait
 
-# Delete all kind clusters
+# Create mgmt + all workload clusters
+[group('clusters')]
+clusters-create: cluster-mgmt clusters-workloads
+
+# Delete a specific cluster (e.g., just cluster-delete east)
+[group('clusters')]
+cluster-delete name:
+    kind delete cluster --name workload-{{name}} || true
+
+# Delete mgmt cluster
+[group('clusters')]
+cluster-delete-mgmt:
+    kind delete cluster --name mgmt || true
+
+# Delete all clusters
 [group('clusters')]
 clusters-delete:
+    #!/usr/bin/env bash
     kind delete cluster --name mgmt || true
-    kind delete cluster --name workload-east || true
-    kind delete cluster --name workload-west || true
+    for c in {{workloads}}; do
+        kind delete cluster --name workload-$c || true
+    done
 
 # Show all kubectl contexts
 [group('clusters')]
@@ -46,13 +77,20 @@ contexts:
 # Networking
 # ─────────────────────────────────────────────────────────────
 
-# Setup docker network so clusters can communicate
+# Setup docker network for all clusters
 [group('network')]
 network-setup:
+    #!/usr/bin/env bash
     docker network create argo-kind || true
-    docker network connect argo-kind mgmt-control-plane
-    docker network connect argo-kind workload-east-control-plane
-    docker network connect argo-kind workload-west-control-plane
+    docker network connect argo-kind mgmt-control-plane || true
+    for c in {{workloads}}; do
+        docker network connect argo-kind workload-$c-control-plane || true
+    done
+
+# Connect a specific cluster to the network
+[group('network')]
+network-connect name:
+    docker network connect argo-kind workload-{{name}}-control-plane || true
 
 # Remove docker network
 [group('network')]
@@ -92,105 +130,104 @@ argocd-login:
 # Workload Cluster Setup
 # ─────────────────────────────────────────────────────────────
 
-# Setup west cluster for ArgoCD management
+# Setup argocd-manager on a workload cluster (e.g., just setup east)
 [group('workloads')]
-setup-west:
-    just _setup-argocd-manager workload-west
-
-# Setup east cluster for ArgoCD management
-[group('workloads')]
-setup-east:
-    just _setup-argocd-manager workload-east
-
-# Setup both workload clusters
-[group('workloads')]
-setup-workloads: setup-east setup-west
-
-[private]
-_setup-argocd-manager cluster:
+setup name:
     #!/usr/bin/env bash
-    kubectl config use-context kind-{{cluster}}
+    set -euo pipefail
+    kubectl config use-context kind-workload-{{name}}
     kubectl create sa argocd-manager -n kube-system || true
     kubectl create clusterrolebinding argocd-manager-role \
       --clusterrole=cluster-admin \
       --serviceaccount=kube-system:argocd-manager || true
-    kubectl apply -f - <<EOF
-    apiVersion: v1
-    kind: Secret
-    metadata:
-      name: argocd-manager-long-lived-token
-      namespace: kube-system
-      annotations:
-        kubernetes.io/service-account.name: argocd-manager
-    type: kubernetes.io/service-account-token
-    EOF
+    # Create long-lived token secret
+    kubectl apply -f - <<<'{"apiVersion":"v1","kind":"Secret","metadata":{"name":"argocd-manager-long-lived-token","namespace":"kube-system","annotations":{"kubernetes.io/service-account.name":"argocd-manager"}},"type":"kubernetes.io/service-account-token"}'
+    # Wait for token to be populated
+    echo "Waiting for token to be populated..."
+    for i in {1..30}; do
+      TOKEN=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.token}' 2>/dev/null || true)
+      if [[ -n "$TOKEN" ]]; then
+        echo "✓ argocd-manager configured on workload-{{name}}"
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "ERROR: Token not populated after 30s"
+    exit 1
+
+# Setup argocd-manager on all workload clusters
+[group('workloads')]
+setup-all-workloads:
+    #!/usr/bin/env bash
+    for c in {{workloads}}; do
+        just setup $c
+    done
 
 # ─────────────────────────────────────────────────────────────
 # ArgoCD Cluster Registration
 # ─────────────────────────────────────────────────────────────
 
-# Register west cluster with ArgoCD
+# Register a workload cluster with ArgoCD (e.g., just register east)
 [group('argocd-clusters')]
-register-west: setup-west
-    just _register-cluster workload-west
+register name:
+    #!/usr/bin/env bash
+    set -euo pipefail
 
-# Register east cluster with ArgoCD
-[group('argocd-clusters')]
-register-east: setup-east
-    just _register-cluster workload-east
+    echo "Registering workload-{{name}} with ArgoCD..."
 
-# Register both workload clusters with ArgoCD
+    # Ensure argocd-manager is setup
+    just setup {{name}}
+
+    # Use the docker hostname from argo-kind network
+    SERVER="https://workload-{{name}}-control-plane:6443"
+
+    # Get CA cert from the workload cluster (already base64 encoded)
+    kubectl config use-context kind-workload-{{name}}
+    CA_DATA=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.ca\.crt}')
+
+    # Get the bearer token (decode it)
+    TOKEN=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.token}' | base64 -d)
+
+    # Validate we got the data
+    if [[ -z "$CA_DATA" ]]; then
+      echo "ERROR: Failed to get CA data"
+      exit 1
+    fi
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: Failed to get token"
+      exit 1
+    fi
+
+    # Switch to mgmt cluster and create the cluster secret
+    kubectl config use-context kind-mgmt
+
+    # Build the config JSON
+    CONFIG=$(printf '{"bearerToken":"%s","tlsClientConfig":{"insecure":false,"caData":"%s"}}' "$TOKEN" "$CA_DATA")
+
+    # Create cluster secret
+    kubectl create secret generic "cluster-workload-{{name}}" \
+      --namespace argocd \
+      --from-literal=name="workload-{{name}}" \
+      --from-literal=server="$SERVER" \
+      --from-literal=config="$CONFIG" \
+      --dry-run=client -o yaml | \
+      kubectl label --local -f - argocd.argoproj.io/secret-type=cluster --dry-run=client -o yaml | \
+      kubectl apply -f -
+
+    echo "✓ workload-{{name}} registered at ${SERVER}"
+
+# Register all workload clusters with ArgoCD
 [group('argocd-clusters')]
-register-all: register-east register-west
+register-all:
+    #!/usr/bin/env bash
+    for c in {{workloads}}; do
+        just register $c
+    done
 
 # Show registered ArgoCD clusters
 [group('argocd-clusters')]
 argocd-clusters:
     kubectl --context kind-mgmt get secrets -n argocd -l argocd.argoproj.io/secret-type=cluster
-
-[private]
-_register-cluster cluster:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    echo "Registering {{cluster}} with ArgoCD..."
-
-    # Use the docker hostname from argo-kind network
-    SERVER="https://{{cluster}}-control-plane:6443"
-
-    # Get CA cert from the workload cluster
-    kubectl config use-context kind-{{cluster}}
-    CA_DATA=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.ca\.crt}')
-
-    # Get the bearer token
-    TOKEN=$(kubectl get secret argocd-manager-long-lived-token -n kube-system -o jsonpath='{.data.token}' | base64 -d)
-
-    # Switch to mgmt cluster and create the cluster secret
-    kubectl config use-context kind-mgmt
-
-    kubectl apply -f - <<EOF
-    apiVersion: v1
-    kind: Secret
-    metadata:
-      name: cluster-{{cluster}}
-      namespace: argocd
-      labels:
-        argocd.argoproj.io/secret-type: cluster
-    type: Opaque
-    stringData:
-      name: {{cluster}}
-      server: ${SERVER}
-      config: |
-        {
-          "bearerToken": "${TOKEN}",
-          "tlsClientConfig": {
-            "insecure": false,
-            "caData": "${CA_DATA}"
-          }
-        }
-    EOF
-
-    echo "✓ {{cluster}} registered at ${SERVER}"
 
 # ─────────────────────────────────────────────────────────────
 # Apps
@@ -232,3 +269,24 @@ setup-all: clusters-create network-setup argocd-install register-all apps-deploy
 # Full cleanup: delete clusters and network
 [group('workflows')]
 cleanup: clusters-delete network-cleanup
+
+# Add a new workload cluster (create, connect network, register with argocd)
+[group('workflows')]
+add name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Adding workload-{{name}}..."
+    just cluster {{name}}
+    just network-connect {{name}}
+    just register {{name}}
+    echo "✓ workload-{{name}} is ready"
+
+# Remove a workload cluster (unregister from argocd, delete cluster)
+[group('workflows')]
+remove name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "Removing workload-{{name}}..."
+    kubectl --context kind-mgmt delete secret cluster-workload-{{name}} -n argocd || true
+    kind delete cluster --name workload-{{name}} || true
+    echo "✓ workload-{{name}} removed"
